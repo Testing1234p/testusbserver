@@ -1,0 +1,142 @@
+name: Build Hardware Agent ISO
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/**'
+      - 'live-build/**'
+      - 'Cargo.toml'
+      - '.github/workflows/build-iso.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            syslinux syslinux-efi syslinux-utils \
+            xorriso grub-pc-bin grub-efi-amd64-bin \
+            mtools isolinux qemu-utils
+
+      - name: Build static agent binary
+        run: |
+          RUSTFLAGS="-C target-feature=+crt-static" \
+            cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Download Alpine minirootfs
+        run: |
+          mkdir -p live-build/build
+          cd live-build/build
+          wget -q "https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19-x86_64.tar.gz"
+
+      - name: Extract rootfs
+        run: |
+          cd live-build/build
+          mkdir -p rootfs
+          sudo tar xzf alpine-minirootfs-3.19-x86_64.tar.gz -C rootfs/
+
+      - name: Setup chroot and install packages
+        run: |
+          cd live-build/build
+          sudo mount --bind /proc rootfs/proc
+          sudo mount --bind /sys rootfs/sys
+          sudo mount --bind /dev rootfs/dev
+          sudo mkdir -p rootfs/etc
+          sudo cp /etc/resolv.conf rootfs/etc/ || true
+          echo "https://dl-cdn.alpinelinux.org/alpine/v3.19/main" | sudo tee rootfs/etc/apk/repositories
+          echo "https://dl-cdn.alpinelinux.org/alpine/v3.19/community" | sudo tee -a rootfs/etc/apk/repositories
+          sudo chroot rootfs /sbin/apk update
+          sudo chroot rootfs /sbin/apk add --no-cache \
+            busybox ipmitool smartmontools pciutils usbutils \
+            lm-sensors dmidecode wkhtmltopdf beep linux-lts syslinux \
+            linux-firmware-none || true
+
+      - name: Configure auto-start
+        run: |
+          cd live-build/build
+          sudo mkdir -p rootfs/etc/local.d/
+          sudo cp ../init.sh rootfs/etc/local.d/hardware-agent.start
+          sudo chmod +x rootfs/etc/local.d/hardware-agent.start
+          sudo chroot rootfs /sbin/rc-update add local default || true
+          sudo sed -i 's/^root:.*/root::0:0:root:\/root:\/bin\/sh/' rootfs/etc/passwd
+
+      - name: Install agent binary into rootfs
+        run: |
+          cd live-build/build
+          sudo cp ../../target/x86_64-unknown-linux-musl/release/hardware-agent rootfs/usr/local/bin/
+          sudo chmod +x rootfs/usr/local/bin/hardware-agent
+          sudo mkdir -p rootfs/mnt/usb
+
+      - name: Unmount chroot
+        run: |
+          cd live-build/build
+          sudo umount rootfs/proc || true
+          sudo umount rootfs/sys || true
+          sudo umount rootfs/dev || true
+
+      - name: Create initramfs and ISO
+        run: |
+          cd live-build/build
+          KERNEL_FILE=$(ls rootfs/boot/vmlinuz* 2>/dev/null | head -n1)
+          if [ -z "$KERNEL_FILE" ]; then
+            echo "ERROR: Kernel not found"
+            exit 1
+          fi
+          sudo cp "$KERNEL_FILE" boot/vmlinuz
+          cd rootfs
+          sudo find . | sudo cpio -o -H newc 2>/dev/null | gzip > ../boot/initramfs.gz
+          cd ..
+          mkdir -p boot/syslinux
+          cat <<EOF > boot/syslinux/syslinux.cfg
+          DEFAULT hwagent
+          LABEL hwagent
+            MENU LABEL Hardware Agent USB
+            LINUX /boot/vmlinuz
+            INITRD /boot/initramfs.gz
+            APPEND root=/dev/ram0 rw quiet console=tty0
+          TIMEOUT 10
+          EOF
+          mkdir -p efi/boot
+          cp /usr/lib/SYSLINUX/efi64/syslinux.efi efi/boot/bootx64.efi 2>/dev/null || true
+          cp /usr/lib/SYSLINUX/efi64/ldlinux.e64 efi/boot/ 2>/dev/null || true
+          xorriso -as mkisofs \
+            -o hardware-agent-live.iso \
+            -c boot/boot.cat \
+            -b boot/syslinux/isolinux.bin \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -eltorito-alt-boot \
+            -e efi/boot/bootx64.efi \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            -isohybrid-mbr /usr/lib/syslinux/mbr/isohdpfx.bin \
+            . 2>/dev/null || \
+          xorriso -as mkisofs \
+            -o hardware-agent-live.iso \
+            -c boot/boot.cat \
+            -b boot/syslinux/isolinux.bin \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            .
+          ls -lh hardware-agent-live.iso
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-agent-live
+          path: live-build/build/hardware-agent-live.iso
+          retention-days: 30
