@@ -9,10 +9,11 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$SCRIPT_DIR/build"
 ISO_NAME="hardware-agent-live.iso"
 ALPINE_VERSION="3.19"
+ALPINE_FULL_VERSION="3.19.9"
 ARCH="x86_64"
 
 # Pacchetti da installare nella rootfs
-PACKAGES="busybox ipmitool smartmontools pciutils usbutils lm-sensors dmidecode wkhtmltopdf beep linux-lts syslinux linux-firmware-none"
+PACKAGES="busybox openrc ipmitool smartmontools pciutils usbutils lm-sensors dmidecode beep linux-lts syslinux linux-firmware-none"
 
 echo "========================================"
 echo "  Hardware Agent USB - ISO Builder"
@@ -26,12 +27,12 @@ mkdir -p "$BUILD_DIR/rootfs"
 
 echo "[1/7] Download Alpine minirootfs..."
 cd "$BUILD_DIR"
-if [ ! -f "alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz" ]; then
-    wget -q "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz"
+if [ ! -f "alpine-minirootfs-${ALPINE_FULL_VERSION}-${ARCH}.tar.gz" ]; then
+    wget -q "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_FULL_VERSION}-${ARCH}.tar.gz"
 fi
 
 echo "[2/7] Estrazione rootfs..."
-tar xzf "alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz" -C rootfs/
+tar xzf "alpine-minirootfs-${ALPINE_FULL_VERSION}-${ARCH}.tar.gz" -C rootfs/
 
 # Installa strumenti host necessari
 echo "[3/7] Installazione strumenti host..."
@@ -86,22 +87,23 @@ rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target x86_64-unknown-linux-musl
 
 # Copia binario nella rootfs
-sudo cp "$PROJECT_DIR/target/x86_64-unknown-linux-musl/release/hardware-agent" rootfs/usr/local/bin/
-sudo chmod +x rootfs/usr/local/bin/hardware-agent
+sudo mkdir -p "$BUILD_DIR/rootfs/usr/local/bin"
+sudo cp "$PROJECT_DIR/target/x86_64-unknown-linux-musl/release/hardware-agent" "$BUILD_DIR/rootfs/usr/local/bin/"
+sudo chmod +x "$BUILD_DIR/rootfs/usr/local/bin/hardware-agent"
 
 # Crea directory di mount per la chiavetta
-sudo mkdir -p rootfs/mnt/usb
+sudo mkdir -p "$BUILD_DIR/rootfs/mnt/usb"
 
 # Pulizia mountpoint
-sudo umount rootfs/proc || true
-sudo umount rootfs/sys || true
-sudo umount rootfs/dev || true
+sudo umount "$BUILD_DIR/rootfs/proc" || true
+sudo umount "$BUILD_DIR/rootfs/sys" || true
+sudo umount "$BUILD_DIR/rootfs/dev" || true
 
 # Prepara initramfs e kernel
 echo "[7/7] Creazione ISO bootabile..."
 
 # Trova kernel installato
-KERNEL_FILE=$(ls rootfs/boot/vmlinuz* 2>/dev/null | head -n1)
+KERNEL_FILE=$(ls "$BUILD_DIR/rootfs/boot/vmlinuz"* 2>/dev/null | head -n1)
 if [ -z "$KERNEL_FILE" ]; then
     echo "[ERRORE] Kernel non trovato nella rootfs"
     exit 1
@@ -109,34 +111,55 @@ fi
 
 sudo cp "$KERNEL_FILE" "$BUILD_DIR/boot/vmlinuz"
 
-# Crea initramfs con mkinitfs o manualmente
+# Crea /init nella rootfs (il kernel initramfs cerca /init)
+sudo ln -sf /sbin/init "$BUILD_DIR/rootfs/init"
+
+# Crea initramfs con cpio
 INITRAMFS="$BUILD_DIR/boot/initramfs"
-cd rootfs
-find . | cpio -o -H newc 2>/dev/null | gzip > "$INITRAMFS.gz"
-cd ..
+cd "$BUILD_DIR/rootfs"
+sudo find . | sudo cpio -o -H newc 2>/dev/null | gzip > "$INITRAMFS.gz"
+cd "$BUILD_DIR"
 
 # Crea bootloader syslinux
 mkdir -p "$BUILD_DIR/boot/syslinux"
-cat <<EOF > "$BUILD_DIR/boot/syslinux/syslinux.cfg"
+cp /usr/lib/ISOLINUX/isolinux.bin "$BUILD_DIR/boot/syslinux/isolinux.bin"
+cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$BUILD_DIR/boot/syslinux/ldlinux.c32" 2>/dev/null || true
+cat <<EOF > "$BUILD_DIR/boot/syslinux/isolinux.cfg"
 DEFAULT hwagent
 LABEL hwagent
   MENU LABEL Hardware Agent USB
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND root=/dev/ram0 rw quiet console=tty0
-TIMEOUT 10
+  APPEND rw console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init
+TIMEOUT 50
 EOF
 
 # Crea ISO con xorriso
-cd "$BUILD_DIR"
+# Prepara directory staging per la ISO (senza rootfs)
+ISO_STAGING="$BUILD_DIR/iso_staging"
+mkdir -p "$ISO_STAGING"
+cp -a "$BUILD_DIR/boot" "$ISO_STAGING/"
 
 # Prepara EFI boot se possibile
-mkdir -p efi/boot
-cp /usr/lib/SYSLINUX/efi64/syslinux.efi efi/boot/bootx64.efi 2>/dev/null || true
-cp /usr/lib/SYSLINUX/efi64/ldlinux.e64 efi/boot/ 2>/dev/null || true
+mkdir -p "$ISO_STAGING/efi/boot"
+cp /usr/lib/SYSLINUX.EFI/efi64/syslinux.efi "$ISO_STAGING/efi/boot/bootx64.efi" 2>/dev/null || true
+cp /usr/lib/syslinux/modules/efi64/ldlinux.e64 "$ISO_STAGING/efi/boot/" 2>/dev/null || true
+
+# Config per EFI boot
+cat <<EOF > "$ISO_STAGING/efi/boot/syslinux.cfg"
+DEFAULT hwagent
+LABEL hwagent
+  MENU LABEL Hardware Agent USB
+  LINUX /boot/vmlinuz
+  INITRD /boot/initramfs.gz
+  APPEND rw console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init
+TIMEOUT 50
+EOF
+
+cd "$ISO_STAGING"
 
 xorriso -as mkisofs \
-    -o "$ISO_NAME" \
+    -o "$BUILD_DIR/$ISO_NAME" \
     -c boot/boot.cat \
     -b boot/syslinux/isolinux.bin \
     -no-emul-boot \
@@ -146,15 +169,7 @@ xorriso -as mkisofs \
     -e efi/boot/bootx64.efi \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
-    -isohybrid-mbr /usr/lib/syslinux/mbr/isohdpfx.bin \
-    . 2>/dev/null || \
-xorriso -as mkisofs \
-    -o "$ISO_NAME" \
-    -c boot/boot.cat \
-    -b boot/syslinux/isolinux.bin \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
     .
 
 echo "========================================"
