@@ -111,10 +111,13 @@ fi
 
 sudo cp "$KERNEL_FILE" "$BUILD_DIR/boot/vmlinuz"
 
-# Crea initramfs con mkinitfs o manualmente
+# Crea /init nella rootfs (il kernel initramfs cerca /init)
+sudo ln -sf /sbin/init "$BUILD_DIR/rootfs/init"
+
+# Crea initramfs con cpio
 INITRAMFS="$BUILD_DIR/boot/initramfs"
 cd "$BUILD_DIR/rootfs"
-find . | cpio -o -H newc 2>/dev/null | gzip > "$INITRAMFS.gz"
+sudo find . | sudo cpio -o -H newc 2>/dev/null | gzip > "$INITRAMFS.gz"
 cd "$BUILD_DIR"
 
 # Crea bootloader syslinux
@@ -127,8 +130,8 @@ LABEL hwagent
   MENU LABEL Hardware Agent USB
   LINUX /boot/vmlinuz
   INITRD /boot/initramfs.gz
-  APPEND root=/dev/ram0 rw quiet console=tty0
-TIMEOUT 10
+  APPEND rw console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init
+TIMEOUT 50
 EOF
 
 # Crea ISO con xorriso
@@ -141,6 +144,17 @@ cp -a "$BUILD_DIR/boot" "$ISO_STAGING/"
 mkdir -p "$ISO_STAGING/efi/boot"
 cp /usr/lib/SYSLINUX.EFI/efi64/syslinux.efi "$ISO_STAGING/efi/boot/bootx64.efi" 2>/dev/null || true
 cp /usr/lib/syslinux/modules/efi64/ldlinux.e64 "$ISO_STAGING/efi/boot/" 2>/dev/null || true
+
+# Config per EFI boot
+cat <<EOF > "$ISO_STAGING/efi/boot/syslinux.cfg"
+DEFAULT hwagent
+LABEL hwagent
+  MENU LABEL Hardware Agent USB
+  LINUX /boot/vmlinuz
+  INITRD /boot/initramfs.gz
+  APPEND rw console=tty0 console=ttyS0,115200n8 rdinit=/sbin/init
+TIMEOUT 50
+EOF
 
 cd "$ISO_STAGING"
 
