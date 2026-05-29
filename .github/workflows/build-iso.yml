@@ -96,21 +96,31 @@ jobs:
           fi
           sudo cp "$KERNEL_FILE" boot/vmlinuz
           cd rootfs
-          sudo find . | sudo cpio -o -H newc 2>/dev/null | gzip > ../boot/initramfs.gz
+          sudo bash -c 'find . | cpio -o -H newc 2>/dev/null | gzip > ../boot/initramfs.gz'
           cd ..
           mkdir -p boot/syslinux
-          cat <<EOF > boot/syslinux/syslinux.cfg
-          DEFAULT hwagent
-          LABEL hwagent
-            MENU LABEL Hardware Agent USB
-            LINUX /boot/vmlinuz
-            INITRD /boot/initramfs.gz
-            APPEND root=/dev/ram0 rw quiet console=tty0
-          TIMEOUT 10
-          EOF
+          cat <<'EOF' > boot/syslinux/syslinux.cfg
+DEFAULT hwagent
+LABEL hwagent
+  MENU LABEL Hardware Agent USB
+  LINUX /boot/vmlinuz
+  INITRD /boot/initramfs.gz
+  APPEND root=/dev/ram0 rw quiet console=tty0
+TIMEOUT 10
+EOF
+          # Copy bootloader files from host system
+          cp /usr/lib/ISOLINUX/isolinux.bin boot/syslinux/ 2>/dev/null || \
+            cp /usr/share/syslinux/isolinux.bin boot/syslinux/ 2>/dev/null || \
+            cp /usr/lib/syslinux/isolinux.bin boot/syslinux/ 2>/dev/null || true
+          cp /usr/lib/ISOLINUX/ldlinux.c32 boot/syslinux/ 2>/dev/null || \
+            cp /usr/share/syslinux/ldlinux.c32 boot/syslinux/ 2>/dev/null || true
           mkdir -p efi/boot
           cp /usr/lib/SYSLINUX/efi64/syslinux.efi efi/boot/bootx64.efi 2>/dev/null || true
           cp /usr/lib/SYSLINUX/efi64/ldlinux.e64 efi/boot/ 2>/dev/null || true
+          # Find isohdpfx.bin
+          ISOHYBRID_MBR="/usr/lib/ISOLINUX/isohdpfx.bin"
+          [ ! -f "$ISOHYBRID_MBR" ] && ISOHYBRID_MBR="/usr/lib/syslinux/mbr/isohdpfx.bin"
+          [ ! -f "$ISOHYBRID_MBR" ] && ISOHYBRID_MBR="/usr/share/syslinux/isohdpfx.bin"
           xorriso -as mkisofs \
             -o hardware-agent-live.iso \
             -c boot/boot.cat \
@@ -122,7 +132,7 @@ jobs:
             -e efi/boot/bootx64.efi \
             -no-emul-boot \
             -isohybrid-gpt-basdat \
-            -isohybrid-mbr /usr/lib/syslinux/mbr/isohdpfx.bin \
+            -isohybrid-mbr "$ISOHYBRID_MBR" \
             . 2>/dev/null || \
           xorriso -as mkisofs \
             -o hardware-agent-live.iso \
