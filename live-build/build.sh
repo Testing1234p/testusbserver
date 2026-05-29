@@ -121,7 +121,7 @@ cd "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/boot/syslinux"
 cp /usr/lib/ISOLINUX/isolinux.bin "$BUILD_DIR/boot/syslinux/isolinux.bin"
 cp /usr/lib/syslinux/modules/bios/ldlinux.c32 "$BUILD_DIR/boot/syslinux/ldlinux.c32" 2>/dev/null || true
-cat <<EOF > "$BUILD_DIR/boot/syslinux/syslinux.cfg"
+cat <<EOF > "$BUILD_DIR/boot/syslinux/isolinux.cfg"
 DEFAULT hwagent
 LABEL hwagent
   MENU LABEL Hardware Agent USB
@@ -156,14 +156,6 @@ xorriso -as mkisofs \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    . 2>/dev/null || \
-xorriso -as mkisofs \
-    -o "$BUILD_DIR/$ISO_NAME" \
-    -c boot/boot.cat \
-    -b boot/syslinux/isolinux.bin \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
     .
 
 echo "========================================"
