@@ -28,7 +28,7 @@ jobs:
           sudo apt-get install -y \
             syslinux syslinux-efi syslinux-utils \
             xorriso grub-pc-bin grub-efi-amd64-bin \
-            mtools isolinux qemu-utils
+            mtools isolinux qemu-utils cpio
 
       - name: Build static agent binary
         run: |
@@ -39,13 +39,22 @@ jobs:
         run: |
           mkdir -p live-build/build
           cd live-build/build
-          wget -q "https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19-x86_64.tar.gz"
+          # Auto-discover latest 3.19 minirootfs filename (e.g. 3.19.0, 3.19.1, etc.)
+          FILE_NAME=$(curl -s https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/ | grep -oE 'alpine-minirootfs-[0-9]+\.[0-9]+\.[0-9]+-x86_64\.tar\.gz' | sort -V | tail -1)
+          if [ -z "$FILE_NAME" ]; then
+            echo "ERROR: Could not find minirootfs file in Alpine 3.19 directory"
+            exit 1
+          fi
+          echo "Found: $FILE_NAME"
+          curl -fL --retry 3 --max-time 60 -o "$FILE_NAME" "https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/$FILE_NAME"
+          ls -lh "$FILE_NAME"
+          echo "ALPINE_FILE=$FILE_NAME" >> $GITHUB_ENV
 
       - name: Extract rootfs
         run: |
           cd live-build/build
           mkdir -p rootfs
-          sudo tar xzf alpine-minirootfs-3.19-x86_64.tar.gz -C rootfs/
+          sudo tar xzf "$ALPINE_FILE" -C rootfs/
 
       - name: Setup chroot and install packages
         run: |
