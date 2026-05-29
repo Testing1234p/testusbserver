@@ -129,10 +129,7 @@ menuentry "Hardware Agent USB" {
 }
 GRUBEOF
           # Build hybrid BIOS/UEFI ISO with grub-mkrescue
-          grub-mkrescue \
-            -o hardware-agent-live.iso \
-            iso/ \
-            --modules="part_msdos part_gpt linux normal configfile boot" 2>&1
+          grub-mkrescue -o hardware-agent-live.iso iso/ 2>&1
           ls -lh hardware-agent-live.iso
 
       - name: Upload ISO artifact
